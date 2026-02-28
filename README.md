@@ -93,6 +93,8 @@ model-index:
 
 # QORA - Native Rust LLM Inference Engine
 
+# Downlod 🤗: https://huggingface.co/qoranet/QORA-LLM
+
 Pure Rust inference engine for the SmolLM3-3B language model. No Python runtime, no CUDA, no external dependencies. Single executable + quantized weights = portable AI on any machine.
 
 ## Overview
@@ -267,7 +269,7 @@ def is_prime(n):
             return False
     return True
 ```
-Downlod 🤗: https://huggingface.co/qoranet/QORA-LLM
+
 
 | Metric | Value |
 |--------|-------|
