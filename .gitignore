@@ -1,0 +1,5 @@
+/target
+*.exe
+*.qora
+*.qor3b
+model.qora
