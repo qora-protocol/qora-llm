@@ -418,6 +418,7 @@ fn fused_gate_up_q4(input: &[f32], gate_w: &Q4Weight, up_w: &Q4Weight) -> Vec<f3
     // Parallel across output columns (chunks of n)
     let num_threads = rayon::current_num_threads();
     let chunk_k = (k + num_threads - 1) / num_threads;
+    let use_avx512 = crate::simd::has_avx512();
 
     let partials: Vec<(Vec<f32>, Vec<f32>)> = (0..num_threads)
         .into_par_iter()
@@ -425,6 +426,15 @@ fn fused_gate_up_q4(input: &[f32], gate_w: &Q4Weight, up_w: &Q4Weight) -> Vec<f3
             let k_start = t * chunk_k;
             let k_end = ((t + 1) * chunk_k).min(k);
             if k_start >= k { return None; }
+
+            if use_avx512 {
+                return Some(unsafe {
+                    crate::simd::fused_gate_up_q4_avx512(
+                        input, &gate_w.packed, &gate_w.scales,
+                        &up_w.packed, &up_w.scales, n, k_start, k_end,
+                    )
+                });
+            }
 
             let mut gate_out = vec![0.0f32; n];
             let mut up_out = vec![0.0f32; n];
@@ -525,6 +535,26 @@ fn gemv_f16(input: &[f32], weight: &F16Weight) -> Vec<f32> {
     let k = weight.k;
     let n = weight.n;
     let w = &weight.data;
+
+    // AVX-512 fast path
+    if crate::simd::has_avx512() {
+        if k * n < 4_000_000 {
+            return unsafe { crate::simd::gemv_f16_avx512(input, w, k, n) };
+        }
+        // Threaded: split across k, each thread uses AVX-512
+        let num_threads = rayon::current_num_threads();
+        let chunk_k = (k + num_threads - 1) / num_threads;
+        let partials: Vec<Vec<f32>> = (0..num_threads).into_par_iter().filter_map(|t| {
+            let k_start = t * chunk_k;
+            let k_end = ((t + 1) * chunk_k).min(k);
+            if k_start >= k { return None; }
+            Some(unsafe { crate::simd::gemv_f16_avx512(&input[k_start..k_end], &w[k_start * n..], k_end - k_start, n) })
+        }).collect();
+        let mut output = vec![0.0f32; n];
+        for p in &partials { for j in 0..n { output[j] += p[j]; } }
+        return output;
+    }
+
     let mut output = vec![0.0f32; n];
     for ki in 0..k {
         let input_val = input[ki];
@@ -565,6 +595,13 @@ fn gemm_f16(x: &[f32], seq_len: usize, weight: &F16Weight) -> Vec<f32> {
 #[inline]
 fn gemv_q4_inner(input: &[f32], packed: &[u8], scales: &[f16],
                   _k: usize, n: usize, k_start: usize, k_end: usize) -> Vec<f32> {
+    debug_assert!(n % Q4_GROUP_SIZE == 0, "Q4 GEMV: n={n} not divisible by {Q4_GROUP_SIZE}");
+
+    // AVX-512 fast path
+    if crate::simd::has_avx512() {
+        return unsafe { crate::simd::gemv_q4_avx512(input, packed, scales, n, k_start, k_end) };
+    }
+
     let groups_per_row = n / Q4_GROUP_SIZE;
     let packed_per_group = Q4_GROUP_SIZE / 2;
     let packed_per_row = groups_per_row * packed_per_group;
